@@ -231,6 +231,12 @@ describe("rewriteLatexBracketDelimiters", () => {
     ).toBe("> ~~~\n> \\[a\\]\n> ~~~\n\nafter $x$");
   });
 
+  it("ends an unclosed quoted fence with its blockquote", () => {
+    expect(
+      rewriteLatexBracketDelimiters("> ~~~\n> \\[a\\]\n\nafter \\(x\\)"),
+    ).toBe("> ~~~\n> \\[a\\]\n\nafter $x$");
+  });
+
   it("closes a blockquoted fence whose closer omits the marker space", () => {
     expect(
       rewriteLatexBracketDelimiters("> ~~~\n> \\[a\\]\n>~~~\n\nafter \\(x\\)"),
@@ -454,6 +460,39 @@ describe("escapeCurrencyDollars", () => {
   it("does not rewrite a fenced block", () => {
     expect(escapeCurrencyDollars("```\nconst price = $5;\n```")).toBe(
       "```\nconst price = $5;\n```",
+    );
+  });
+
+  it("preserves tilde-fenced currency and escapes the following prose", () => {
+    expect(escapeCurrencyDollars("~~~text\n$5\n~~~\nafter $10")).toBe(
+      "~~~text\n$5\n~~~\nafter \\$10",
+    );
+  });
+
+  it("preserves currency while a tilde fence is incomplete", () => {
+    const text = "~~~text\n$5\n~~~";
+    for (let end = 3; end <= text.length; end++) {
+      expect(escapeCurrencyDollars(text.slice(0, end))).toBe(
+        text.slice(0, end),
+      );
+    }
+  });
+
+  it("does not close an unclosed root fence on a quoted tilde run", () => {
+    expect(escapeCurrencyDollars("~~~a\n$5\n> ~~~\nafter $10")).toBe(
+      "~~~a\n$5\n> ~~~\nafter $10",
+    );
+  });
+
+  it("ends an unclosed quoted fence with its blockquote", () => {
+    expect(escapeCurrencyDollars("> ~~~\n> $5\n\nafter $10")).toBe(
+      "> ~~~\n> $5\n\nafter \\$10",
+    );
+  });
+
+  it("preserves currency while a backtick fence is incomplete", () => {
+    expect(escapeCurrencyDollars("```text\nconst price = $5;")).toBe(
+      "```text\nconst price = $5;",
     );
   });
 
