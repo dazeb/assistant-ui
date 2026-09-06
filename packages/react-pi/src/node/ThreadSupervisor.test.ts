@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type * as PiSdk from "@earendil-works/pi-coding-agent";
 import type {
   AgentSession,
   SessionInfo,
@@ -20,7 +24,8 @@ const sdk = vi.hoisted(() => ({
   unlink: vi.fn(),
 }));
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...(await importOriginal()),
   createAgentSession: sdk.createAgentSession,
   ModelRuntime: { create: sdk.modelRuntimeCreate },
   SessionManager: {
@@ -178,6 +183,80 @@ describe("PiThreadSupervisor", () => {
     expect(sdk.createAgentSession).toHaveBeenCalledTimes(1);
     expect(session.setThinkingLevel).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    { supportsThinking: true, levels: ["high"] },
+    { supportsThinking: false, levels: [] },
+  ])(
+    "keeps the effective thinking level when supportsThinking is $supportsThinking",
+    async ({ supportsThinking, levels }) => {
+      const actual = await vi.importActual<typeof PiSdk>(
+        "@earendil-works/pi-coding-agent",
+      );
+      const cwd = await mkdtemp(join(tmpdir(), "pi-thinking-"));
+      const supervisor = new PiThreadSupervisor({ workspacePath: cwd });
+      try {
+        const modelRuntime = await actual.ModelRuntime.create({
+          authPath: join(cwd, "auth.json"),
+          modelsPath: null,
+          refreshOnCreate: false,
+        });
+        const model = modelRuntime
+          .getModels()
+          .find(({ reasoning, thinkingLevelMap }) =>
+            supportsThinking
+              ? reasoning &&
+                thinkingLevelMap?.xhigh === null &&
+                thinkingLevelMap.max == null &&
+                thinkingLevelMap.high !== null &&
+                thinkingLevelMap.off !== null
+              : !reasoning,
+          );
+        if (!model)
+          throw new Error("Missing model with matching thinking support");
+        const settingsManager = actual.SettingsManager.inMemory();
+        sdk.create.mockReturnValue(actual.SessionManager.inMemory(cwd));
+        sdk.createAgentSession.mockImplementation(
+          (options: PiSdk.CreateAgentSessionOptions) =>
+            actual.createAgentSession({
+              ...options,
+              modelRuntime,
+              model,
+              thinkingLevel: "off",
+              settingsManager,
+              tools: [],
+              resourceLoader: new actual.DefaultResourceLoader({
+                cwd,
+                agentDir: cwd,
+                settingsManager,
+              }),
+            }),
+        );
+        const { metadata } = await supervisor.createThread();
+        const received: string[] = [];
+        supervisor.subscribe(
+          metadata.id,
+          (event) => {
+            if (event.type === "thinking_level_changed")
+              received.push(event.level);
+          },
+          { includeSnapshot: false },
+        );
+        await Promise.resolve();
+
+        await supervisor.setThinkingLevel(metadata.id, "xhigh");
+        expect(received).toEqual(levels);
+
+        await supervisor.setThinkingLevel(metadata.id, "xhigh");
+        expect(received).toEqual(levels);
+        const { metadata: after } = await supervisor.getThread(metadata.id);
+        expect(after.config?.thinkingLevel).toBe(levels[0] ?? "off");
+      } finally {
+        await supervisor.dispose();
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("discards a cold session that opens after its thread is deleted", async () => {
     const session = {
